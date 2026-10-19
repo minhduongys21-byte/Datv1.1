@@ -1,0 +1,391 @@
+local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+-- Xóa GUI cũ nếu có
+if CoreGui:FindFirstChild("DatChuaChessGui") then
+    CoreGui.DatChuaChessGui:Destroy()
+end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "DatChuaChessGui"
+screenGui.IgnoreGuiInset = true
+
+if gethui then
+    screenGui.Parent = gethui()
+else
+    screenGui.Parent = CoreGui
+end
+
+-- ==========================================
+-- CẤU HÌNH BÀN CỜ
+-- ==========================================
+local BOARD_START = Vector3.new(-14, 5, -14)
+local TILE_SIZE = 4
+local FILES = {"a", "b", "c", "d", "e", "f", "g", "h"}
+
+local isChessEnabled = false
+local autoSuggestEnabled = true
+local boardState = {}
+local selectedSquare = nil
+local validMovesHighlights = {}
+
+local activePieces = workspace:FindFirstChild("ActiveChessPieces") or Instance.new("Folder")
+activePieces.Name = "ActiveChessPieces"
+activePieces.Parent = workspace
+
+local tilesFolder = workspace:FindFirstChild("BoardTiles") or Instance.new("Folder")
+tilesFolder.Name = "BoardTiles"
+tilesFolder.Parent = workspace
+
+-- ==========================================
+-- HÀM TRỢ GIÚP DỌN DẸP & TẠO HIGHLIGHT
+-- ==========================================
+local function clearHighlights()
+	for _, hl in ipairs(validMovesHighlights) do
+		if hl then hl:Destroy() end
+	end
+	validMovesHighlights = {}
+end
+
+local function clearBoard()
+	activePieces:ClearAllChildren()
+	tilesFolder:ClearAllChildren()
+	boardState = {}
+	clearHighlights()
+	selectedSquare = nil
+end
+
+local function getFileAndRank(square)
+	local fChar = string.sub(square, 1, 1)
+	local rNum = tonumber(string.sub(square, 2, 2))
+	local fNum = table.find(FILES, fChar)
+	return fNum, rNum
+end
+
+local function getSquareFromCoords(f, r)
+	if f >= 1 and f <= 8 and r >= 1 and r <= 8 then
+		return FILES[f] .. tostring(r)
+	end
+	return nil
+end
+
+-- Chuyển trạng thái bàn cờ thành chuỗi FEN hiện tại
+local function getCurrentFEN()
+	local fenRanks = {}
+	for r = 8, 1, -1 do
+		local rankStr = ""
+		local emptyCount = 0
+		for f = 1, 8 do
+			local sq = getSquareFromCoords(f, r)
+			local piece = boardState[sq]
+			if piece then
+				if emptyCount > 0 then
+					rankStr = rankStr .. tostring(emptyCount)
+					emptyCount = 0
+				end
+				rankStr = rankStr .. piece
+			else
+				emptyCount = emptyCount + 1
+			end
+		end
+		if emptyCount > 0 then
+			rankStr = rankStr .. tostring(emptyCount)
+		end
+		table.insert(fenRanks, rankStr)
+	end
+	return table.concat(fenRanks, "/") .. " w - - 0 1"
+end
+
+-- ==========================================
+-- TỰ ĐỘNG TÌM NƯỚC ĐI TỐI ƯU (API STOCKFISH)
+-- ==========================================
+local function fetchBestMove(statusLabel)
+	if not isChessEnabled then return end
+	
+	statusLabel.Text = "AI: Đang tính toán nước đi..."
+	statusLabel.TextColor3 = Color3.fromRGB(255, 200, 50)
+	
+	local currentFEN = getCurrentFEN()
+	local apiUrl = "https://stockfish.online/api/s/v2.php?fen=" .. HttpService:UrlEncode(currentFEN) .. "&depth=10"
+	
+	task.spawn(function()
+		local success, response = pcall(function()
+			return game:HttpGet(apiUrl)
+		end)
+		
+		if success and response then
+			local data = HttpService:JSONDecode(response)
+			if data and data.success and data.bestmove then
+				-- bestmove dạng: "e2e4"
+				local bestMoveStr = string.sub(data.bestmove, 9, 12)
+				local fromSq = string.sub(bestMoveStr, 1, 2)
+				local toSq = string.sub(bestMoveStr, 3, 4)
+				
+				clearHighlights()
+				
+				-- Highlight ô đi (Màu vàng) và ô đến (Màu xanh nõn chuối)
+				local tileFrom = tilesFolder:FindFirstChild(fromSq)
+				local tileTo = tilesFolder:FindFirstChild(toSq)
+				
+				if tileFrom then
+					local hl1 = Instance.new("SelectionBox")
+					hl1.Color3 = Color3.fromRGB(255, 255, 0)
+					hl1.Adornee = tileFrom
+					hl1.Parent = tileFrom
+					table.insert(validMovesHighlights, hl1)
+				end
+				
+				if tileTo then
+					local hl2 = Instance.new("SelectionBox")
+					hl2.Color3 = Color3.fromRGB(50, 255, 50)
+					hl2.LineThickness = 0.2
+					hl2.Adornee = tileTo
+					hl2.Parent = tileTo
+					table.insert(validMovesHighlights, hl2)
+				end
+				
+				statusLabel.Text = "AI Gợi Ý: " .. string.upper(fromSq) .. " ➔ " .. string.upper(toSq)
+				statusLabel.TextColor3 = Color3.fromRGB(50, 255, 100)
+			else
+				statusLabel.Text = "Không tìm thấy nước đi!"
+				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+			end
+		else
+			statusLabel.Text = "Lỗi kết nối API Stockfish"
+			statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+		end
+	end)
+end
+
+-- ==========================================
+-- TẠO BÀN CỜ 3D & NẠP CỜ
+-- ==========================================
+local function enableChess(fenString, statusLabel)
+	clearBoard()
+	isChessEnabled = true
+	fenString = (fenString and fenString ~= "") and fenString or "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+	
+	-- Tạo 64 ô cờ
+	for r = 1, 8 do
+		for f = 1, 8 do
+			local squareName = FILES[f] .. tostring(9 - r)
+			local tile = Instance.new("Part")
+			tile.Name = squareName
+			tile.Size = Vector3.new(TILE_SIZE - 0.2, 0.5, TILE_SIZE - 0.2)
+			tile.Position = BOARD_START + Vector3.new((f - 1) * TILE_SIZE, 0, (r - 1) * TILE_SIZE)
+			tile.Anchored = true
+			tile.Material = Enum.Material.SmoothPlastic
+			tile.Color = ((r + f) % 2 == 0) and Color3.fromRGB(240, 217, 181) or Color3.fromRGB(181, 136, 99)
+			
+			local clickDetector = Instance.new("ClickDetector")
+			clickDetector.MaxActivationDistance = 64
+			clickDetector.Parent = tile
+			clickDetector.MouseClick:Connect(function()
+				if selectedSquare and selectedSquare ~= squareName then
+					-- Thực hiện di chuyển
+					boardState[squareName] = boardState[selectedSquare]
+					boardState[selectedSquare] = nil
+					
+					for _, p in ipairs(activePieces:GetChildren()) do
+						if string.sub(p.Name, -2) == squareName then p:Destroy() end
+					end
+					for _, p in ipairs(activePieces:GetChildren()) do
+						if string.sub(p.Name, -2) == selectedSquare then
+							p.Position = tile.Position + Vector3.new(0, 1.75, 0)
+							p.Name = string.sub(p.Name, 1, #p.Name - 2) .. squareName
+						end
+					end
+					
+					selectedSquare = nil
+					clearHighlights()
+					
+					-- Tự động gợi ý nước đi tiếp theo
+					if autoSuggestEnabled then
+						fetchBestMove(statusLabel)
+					end
+				else
+					selectedSquare = squareName
+				end
+			end)
+			
+			tile.Parent = tilesFolder
+		end
+	end
+	
+	-- Nạp dữ liệu FEN
+	local boardData = string.split(fenString, " ")[1]
+	local ranks = string.split(boardData, "/")
+	
+	for rankIdx, rankData in ipairs(ranks) do
+		local r = 9 - rankIdx
+		local f = 1
+		for i = 1, #rankData do
+			local char = string.sub(rankData, i, i)
+			local num = tonumber(char)
+			
+			if num then
+				f = f + num
+			else
+				local sq = getSquareFromCoords(f, r)
+				boardState[sq] = char
+				
+				local piecePart = Instance.new("Part")
+				piecePart.Name = char .. "_" .. sq
+				piecePart.Size = Vector3.new(2.5, 3, 2.5)
+				
+				local tile = tilesFolder:FindFirstChild(sq)
+				if tile then piecePart.Position = tile.Position + Vector3.new(0, 1.75, 0) end
+				
+				piecePart.Anchored = true
+				piecePart.Color = (char == string.upper(char)) and Color3.fromRGB(245, 245, 245) or Color3.fromRGB(35, 35, 35)
+				
+				local bb = Instance.new("BillboardGui")
+				bb.Size = UDim2.new(1.5, 0, 1.5, 0)
+				bb.AlwaysOnTop = true
+				bb.Adornee = piecePart
+				bb.Parent = piecePart
+				
+				local lbl = Instance.new("TextLabel")
+				lbl.Size = UDim2.new(1,0,1,0)
+				lbl.BackgroundTransparency = 1
+				lbl.Text = char
+				lbl.TextScaled = true
+				lbl.TextColor3 = (char == string.upper(char)) and Color3.fromRGB(0,0,0) or Color3.fromRGB(255,255,255)
+				lbl.Font = Enum.Font.SourceSansBold
+				lbl.Parent = bb
+				
+				piecePart.Parent = activePieces
+				f = f + 1
+			end
+		end
+	end
+	
+	-- Tự động phân tích nước đầu tiên
+	if autoSuggestEnabled then
+		fetchBestMove(statusLabel)
+	end
+end
+
+-- ==========================================
+-- MENU ĐIỀU KHIỂN (MOBILE FRIENDLY)
+-- ==========================================
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 320, 0, 230)
+main.Position = UDim2.new(0.5, -160, 0.3, 0)
+main.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+main.BorderSizePixel = 0
+main.Parent = screenGui
+
+local outline = Instance.new("UIStroke")
+outline.Color = Color3.fromRGB(255, 30, 50)
+outline.Thickness = 2
+outline.Parent = main
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 35)
+title.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+title.Text = "🤖 DAT V1 - AUTO BEST MOVE"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.Font = Enum.Font.SourceSansBold
+title.TextSize = 15
+title.Parent = main
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, 0, 0, 25)
+status.Position = UDim2.new(0, 0, 0.18, 0)
+status.BackgroundTransparency = 1
+status.Text = "STATUS: READY"
+status.TextColor3 = Color3.fromRGB(180, 180, 190)
+status.Font = Enum.Font.SourceSans
+status.TextSize = 13
+status.Parent = main
+
+local inputFEN = Instance.new("TextBox")
+inputFEN.Size = UDim2.new(0.88, 0, 0, 35)
+inputFEN.Position = UDim2.new(0.06, 0, 0.32, 0)
+inputFEN.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
+inputFEN.TextColor3 = Color3.fromRGB(255, 255, 255)
+inputFEN.PlaceholderText = "Nhập FEN (Bỏ trống = Ván mới)..."
+inputFEN.Text = ""
+inputFEN.Font = Enum.Font.SourceSans
+inputFEN.TextSize = 12
+inputFEN.ClearTextOnFocus = false
+inputFEN.Parent = main
+
+local toggleChessBtn = Instance.new("TextButton")
+toggleChessBtn.Size = UDim2.new(0.88, 0, 0, 38)
+toggleChessBtn.Position = UDim2.new(0.06, 0, 0.52, 0)
+toggleChessBtn.BackgroundColor3 = Color3.fromRGB(45, 20, 25)
+toggleChessBtn.Text = "CHESS : OFF"
+toggleChessBtn.TextColor3 = Color3.fromRGB(255, 50, 65)
+toggleChessBtn.Font = Enum.Font.SourceSansBold
+toggleChessBtn.TextSize = 16
+toggleChessBtn.Parent = main
+
+local autoMoveBtn = Instance.new("TextButton")
+autoMoveBtn.Size = UDim2.new(0.88, 0, 0, 35)
+autoMoveBtn.Position = UDim2.new(0.06, 0, 0.72, 0)
+autoMoveBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 200)
+autoMoveBtn.Text = "🎯 TÍNH NƯỚC TỐI ƯU NGAY"
+autoMoveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+autoMoveBtn.Font = Enum.Font.SourceSansBold
+autoMoveBtn.TextSize = 14
+autoMoveBtn.Parent = main
+
+-- Bật / Tắt Game
+toggleChessBtn.Activated:Connect(function()
+	if isChessEnabled then
+		isChessEnabled = false
+		clearBoard()
+		toggleChessBtn.Text = "CHESS : OFF"
+		toggleChessBtn.TextColor3 = Color3.fromRGB(255, 50, 65)
+		toggleChessBtn.BackgroundColor3 = Color3.fromRGB(45, 20, 25)
+		outline.Color = Color3.fromRGB(255, 30, 50)
+		status.Text = "STATUS: OFF"
+		status.TextColor3 = Color3.fromRGB(180, 180, 190)
+	else
+		enableChess(inputFEN.Text, status)
+		toggleChessBtn.Text = "CHESS : ON"
+		toggleChessBtn.TextColor3 = Color3.fromRGB(50, 255, 100)
+		toggleChessBtn.BackgroundColor3 = Color3.fromRGB(20, 45, 25)
+		outline.Color = Color3.fromRGB(50, 255, 100)
+	end
+end)
+
+-- Bấm tính nước tối ưu thủ công
+autoMoveBtn.Activated:Connect(function()
+	if isChessEnabled then
+		fetchBestMove(status)
+	end
+end)
+
+-- Kéo Menu trên điện thoại
+local dragging = false
+local dragStart, startPosition
+
+title.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPosition = main.Position
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStart
+		main.Position = UDim2.new(
+			startPosition.X.Scale, startPosition.X.Offset + delta.X,
+			startPosition.Y.Scale, startPosition.Y.Offset + delta.Y
+		)
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = false
+	end
+end)
