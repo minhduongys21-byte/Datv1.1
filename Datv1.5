@@ -1,0 +1,144 @@
+local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- Xóa GUI cũ nếu đã có
+if CoreGui:FindFirstChild("DatChuaChessMini") then
+    CoreGui.DatChuaChessMini:Destroy()
+end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "DatChuaChessMini"
+screenGui.IgnoreGuiInset = true
+
+if gethui then
+    screenGui.Parent = gethui()
+else
+    screenGui.Parent = CoreGui
+end
+
+local isEnabled = false
+local highlights = {}
+
+-- Clear màu trên bàn cờ
+local function clearHighlights()
+    for _, hl in ipairs(highlights) do
+        if hl then hl:Destroy() end
+    end
+    highlights = {}
+end
+
+-- Tô màu ô cờ
+local function highlightPart(part, color)
+    if not part or not part:IsA("BasePart") then return end
+    local hl = Instance.new("Highlight")
+    hl.Adornee = part
+    hl.FillColor = color
+    hl.FillTransparency = 0.4
+    hl.OutlineColor = color
+    hl.OutlineTransparency = 0
+    hl.Parent = part
+    table.insert(highlights, hl)
+end
+
+-- Tự động lắng nghe khi bấm chọn quân cờ trên bàn cờ game
+local clickConnection
+local function startListening()
+    clickConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if not isEnabled or gameProcessed then return end
+        
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            local camera = workspace.CurrentCamera
+            local ray = camera:ViewportPointToRay(input.Position.X, input.Position.Y)
+            local raycastResult = workspace:Raycast(ray.Origin, ray.Direction * 1000)
+            
+            if raycastResult and raycastResult.Instance then
+                local hitObj = raycastResult.Instance
+                
+                -- Xóa màu cũ
+                clearHighlights()
+                
+                -- Highlight ô/quân cờ vừa chọn (Màu Vàng)
+                highlightPart(hitObj, Color3.fromRGB(255, 255, 0))
+            end
+        end
+    end)
+end
+
+local function stopListening()
+    if clickConnection then
+        clickConnection:Disconnect()
+        clickConnection = nil
+    end
+    clearHighlights()
+end
+
+-- ==========================================
+-- MENU TỐI GIẢN (CHỈ 1 NÚT BẬT / TẮT)
+-- ==========================================
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 150, 0, 45)
+mainFrame.Position = UDim2.new(0.5, -75, 0.88, 0) -- Đặt ở cạnh dưới màn hình
+mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+mainFrame.BorderSizePixel = 0
+mainFrame.Parent = screenGui
+
+local outline = Instance.new("UIStroke")
+outline.Color = Color3.fromRGB(255, 50, 65)
+outline.Thickness = 2
+outline.Parent = mainFrame
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(1, 0, 1, 0)
+toggleBtn.BackgroundTransparency = 1
+toggleBtn.Text = "AUTO HIGHLIGHT: OFF"
+toggleBtn.TextColor3 = Color3.fromRGB(255, 50, 65)
+toggleBtn.Font = Enum.Font.SourceSansBold
+toggleBtn.TextSize = 13
+toggleBtn.Parent = mainFrame
+
+toggleBtn.Activated:Connect(function()
+    isEnabled = not isEnabled
+    if isEnabled then
+        toggleBtn.Text = "AUTO HIGHLIGHT: ON"
+        toggleBtn.TextColor3 = Color3.fromRGB(50, 255, 100)
+        outline.Color = Color3.fromRGB(50, 255, 100)
+        startListening()
+    else
+        toggleBtn.Text = "AUTO HIGHLIGHT: OFF"
+        toggleBtn.TextColor3 = Color3.fromRGB(255, 50, 65)
+        outline.Color = Color3.fromRGB(255, 50, 65)
+        stopListening()
+    end
+end)
+
+-- Kéo thả nút ON/OFF
+local dragging = false
+local dragStart, startPosition
+
+mainFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPosition = mainFrame.Position
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(
+            startPosition.X.Scale, startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale, startPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+print("DatV1 Chess Mini Loaded!")
